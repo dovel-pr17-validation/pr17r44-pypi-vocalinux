@@ -1,0 +1,236 @@
+import Link from "next/link";
+import { type Metadata } from "next";
+import { ChevronRight, Cpu, Laptop, Terminal } from "lucide-react";
+import { SeoSubpageShell } from "@/components/seo-subpage-shell";
+import { TerminalBlock } from "@/components/terminal-block";
+import { buildPageMetadata } from "@/lib/seo";
+
+const installCommand =
+  "curl -fsSL https://raw.githubusercontent.com/VocaHQ/vocalinux/main/install.sh -o /tmp/vl.sh && bash /tmp/vl.sh --interactive";
+const installDisplayCommand = `curl -fsSL \\
+  https://raw.githubusercontent.com/VocaHQ/vocalinux/main/install.sh \\
+  -o /tmp/vl.sh && \\
+bash /tmp/vl.sh --interactive`;
+
+const distroGuides = [
+  {
+    name: "Ubuntu",
+    href: "/install/ubuntu/",
+    description:
+      "Install offline voice dictation on Ubuntu 24.04+ with GNOME, KDE, X11, or Wayland.",
+    icon: Laptop,
+  },
+  {
+    name: "Fedora",
+    href: "/install/fedora/",
+    description:
+      "Set up speech-to-text on Fedora Workstation and Silverblue with distro-specific notes.",
+    icon: Terminal,
+  },
+  {
+    name: "Arch Linux",
+    href: "/install/arch/",
+    description:
+      "Install Vocalinux on Arch, Manjaro, and EndeavourOS with package prerequisites and tips.",
+    icon: Cpu,
+  },
+  {
+    name: "Debian",
+    href: "/install/debian/",
+    description: "Debian 12+ with the install script or the native .deb package.",
+    icon: Terminal,
+  },
+  {
+    name: "openSUSE",
+    href: "/install/opensuse/",
+    description: "Set up offline voice typing on openSUSE Tumbleweed.",
+    icon: Cpu,
+  },
+  {
+    name: "Linux Mint",
+    href: "/install/linux-mint/",
+    description: "Voice dictation on Linux Mint releases built on Ubuntu 24.04.",
+    icon: Laptop,
+  },
+  {
+    name: "Pop!_OS",
+    href: "/install/pop-os/",
+    description: "Install Vocalinux on Pop!_OS 24.04 and later.",
+    icon: Laptop,
+  },
+  {
+    name: "NixOS",
+    href: "/install/nixos/",
+    description: "Use the Nix flake or the NixOS module shipped since v0.18.2.",
+    icon: Terminal,
+  },
+];
+
+export const metadata: Metadata = buildPageMetadata({
+  title: "Install Speech to Text on Linux (Ubuntu, Fedora, Arch)",
+  description:
+    "Linux voice dictation install guides for Ubuntu, Debian, Fedora, Arch, openSUSE, Mint, Pop!_OS, NixOS, and Flatpak. Start offline speech-to-text.",
+  path: "/install",
+  keywords: [
+    "install voice dictation linux",
+    "linux speech to text setup",
+    "ubuntu voice typing install",
+    "fedora speech recognition",
+    "arch linux dictation",
+  ],
+});
+
+export default function InstallGuidesPage() {
+  return (
+    <SeoSubpageShell>
+      <section>
+        <p className="subpage-kicker">Linux installation</p>
+        <h1>Install Voice Dictation on Linux</h1>
+        <p className="subpage-lede">
+          Pick your distro guide and follow a proven setup flow for offline
+          speech-to-text on Linux. Every guide is written for real desktop usage.
+        </p>
+
+        <div className="mt-8">
+          <TerminalBlock
+            command={installCommand}
+            displayCommand={installDisplayCommand}
+            label="install.sh --interactive"
+          />
+        </div>
+        <p className="mt-4 text-sm text-muted-foreground">
+          Then launch <code>vocalinux</code>.
+        </p>
+        <div className="install-alts">
+          <a
+            className="install-alt"
+            href="https://github.com/VocaHQ/vocalinux/releases"
+            rel="noopener noreferrer"
+          >
+            <p className="install-alt-kicker">No installer</p>
+            <h2>AppImage</h2>
+            <p>
+              x86_64 or aarch64 from GitHub Releases. No root. Host
+              text-injection tools are still required.
+            </p>
+          </a>
+          <a
+            className="install-alt"
+            href="https://github.com/VocaHQ/vocalinux/blob/main/docs/INSTALL.md#distro-packages-deb--rpm"
+            rel="noopener noreferrer"
+          >
+            <p className="install-alt-kicker">New</p>
+            <h2>Native packages</h2>
+            <p>
+              .deb for Debian 12+ and Ubuntu 24.04+. .rpm for Fedora.
+              x86_64 and aarch64 on every release.
+            </p>
+          </a>
+          <a
+            className="install-alt"
+            href="/flatpak/"
+          >
+            <p className="install-alt-kicker">Auto-updates</p>
+            <h2>Flatpak</h2>
+            <p>
+              Install once from the VocaHQ remote and{" "}
+              <code>flatpak update</code> carries each stable release. Or
+              sideload the .flatpak bundle.
+            </p>
+          </a>
+          <a
+            className="install-alt"
+            href="https://snapcraft.io/vocalinux"
+            rel="noopener noreferrer"
+          >
+            <p className="install-alt-kicker">Snap Store</p>
+            <h2>Snap</h2>
+            <p>
+              <code>snap install vocalinux --edge</code>. amd64 only for
+              now; a .snap is attached to every release too.
+            </p>
+          </a>
+          <a
+            className="install-alt"
+            href="https://aur.archlinux.org/packages/vocalinux"
+            rel="noopener noreferrer"
+          >
+            <p className="install-alt-kicker">Arch</p>
+            <h2>AUR</h2>
+            <p>
+              <code>yay -S vocalinux</code>, or vocalinux-bin for the
+              prebuilt package.
+            </p>
+          </a>
+          <a
+            className="install-alt"
+            href="https://github.com/VocaHQ/vocalinux/blob/main/docs/INSTALL.md#from-source"
+            rel="noopener noreferrer"
+          >
+            <p className="install-alt-kicker">From source</p>
+            <h2>Build it yourself</h2>
+            <p>
+              Clone the repo and run <code>./install.sh</code>. The install
+              guide has the full source path.
+            </p>
+          </a>
+        </div>
+      </section>
+
+      <section className="mt-12 grid gap-4 md:grid-cols-3">
+        {distroGuides.map((guide) => {
+          const Icon = guide.icon;
+          return (
+            <Link
+              key={guide.href}
+              href={guide.href}
+              className="subpage-card group p-5"
+            >
+              <div className="mb-3 inline-flex rounded-[10px] bg-primary/10 p-2.5">
+                <Icon className="h-5 w-5 text-primary" />
+              </div>
+              <h2 className="mb-2 text-xl font-semibold">{guide.name}</h2>
+              <p className="mb-4 text-sm text-muted-foreground">
+                {guide.description}
+              </p>
+              <span className="inline-flex items-center gap-1 text-sm font-semibold text-primary">
+                Read {guide.name} guide
+                <ChevronRight className="h-4 w-4 transition-transform group-hover:translate-x-0.5" />
+              </span>
+            </Link>
+          );
+        })}
+      </section>
+
+      <section className="subpage-panel mt-12 p-6 sm:p-8">
+        <h2 className="mb-4">After installation</h2>
+        <ul className="space-y-3 text-muted-foreground">
+          <li>
+            Launch with{" "}
+            <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-sm text-foreground">
+              vocalinux
+            </code>
+            .
+          </li>
+          <li>
+            Hold Right Alt (Option) to dictate, or switch to toggle mode in Settings.
+          </li>
+          <li>
+            Choose whisper.cpp for speed, Whisper for maximum model
+            compatibility, or VOSK for low-RAM systems.
+          </li>
+        </ul>
+        <p className="mt-6 text-sm text-muted-foreground">
+          Need help choosing an engine? See the{" "}
+          <Link
+            href="/compare/"
+            className="font-semibold text-primary hover:underline"
+          >
+            speech engine comparison
+          </Link>
+          .
+        </p>
+      </section>
+    </SeoSubpageShell>
+  );
+}

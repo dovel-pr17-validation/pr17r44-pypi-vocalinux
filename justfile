@@ -1,0 +1,317 @@
+# Vocalinux justfile
+# Convenient commands for development
+# Run `just` to list all recipes. Python tooling runs through `uv run` against
+# .venv/ — run `just deps` after cloning (requires uv).
+#
+# Two environments, deliberately separate:
+#   .venv/  dev tooling, built by uv from .python-version (3.13). `just deps`
+#           builds PyGObject from the lock and needs libgirepository-2.0-dev
+#           (Ubuntu 24.04+) or glib2-devel (Fedora 40+), plus cairo-gobject
+#           headers on Fedora. Debian 12 cannot build 3.56; use `just install-dev`.
+#   venv/   what `just install` creates, always from the system Python so the
+#           distro PyGObject package is importable.
+#           install.sh ignores an activated .venv and rebuilds
+#           venv/ if another interpreter created it, so `just install` is safe to
+#           run from any shell. Override with SYSTEM_PYTHON=/usr/bin/python3.12.
+
+# Extras and groups installed by `just deps`. `uv sync` prunes whatever the flags
+# do not name — omitting `--group lint` really does uninstall the linters.
+# Recipes that run tools use `uv run --no-sync` so they do not undo `just deps-all`
+# (whisper/vosk/docs). They depend on `_tooling` for the same reason: with nothing
+# left to create .venv/, `uv run --no-sync` on a fresh clone leaves an empty one
+# behind and fails with `Failed to spawn: pytest`. CI lints with `--only-group lint`
+# instead: that skips the project, whose pyaudio/PyGObject need system headers a
+# lint runner has no reason to install.
+DEV_EXTRAS := "--extra dev --extra vad --group lint"
+
+# List available recipes
+default:
+    @just --list
+
+# Fail before `uv sync` when the headers pyaudio, pycairo and PyGObject need are
+# absent. Without this, the first error is a C compiler traceback from inside a
+# dependency build, which reads as a uv problem rather than a distro package.
+# PyGObject/pycairo checks apply only on Linux, matching the dependency marker.
+# An existing .venv/ with the platform's native packages skips the header check.
+[no-exit-message]
+[private]
+_check_build_deps:
+    @python3 scripts/check_build_deps.py
+
+# Create .venv/ and keep it matching the lock. --inexact is what makes this safe
+# to run ahead of every recipe: a plain `uv sync` removes extraneous packages, so
+# it would uninstall whatever `just deps-all` installed — the very thing the
+# --no-sync flags below exist to prevent. `version` skips this; it reads one
+# string out of version.py and needs a bare interpreter, not a sync.
+[private]
+_tooling: _check_build_deps
+    uv sync --inexact {{DEV_EXTRAS}}
+
+# Install Vocalinux
+install:
+    ./install.sh
+
+# Install in development mode
+install-dev:
+    ./install.sh --dev
+
+# Install development dependencies into .venv/ (dev + vad extras)
+deps: _check_build_deps
+    uv sync {{DEV_EXTRAS}}
+
+# Install every optional extra — whisper/vosk engines and docs (CUDA torch, multi-GB)
+deps-all: _check_build_deps
+    uv sync --all-extras --group lint
+
+# Run test suite
+test: _tooling
+    @echo "Running tests..."
+    uv run --no-sync pytest -v
+
+# Run tests with coverage
+test-cov: _tooling
+    @echo "Running tests with coverage..."
+    uv run --no-sync pytest --cov=src --cov-report=html --cov-report=term
+    @echo "Coverage report generated in htmlcov/"
+
+# Run linters (flake8, black, isort)
+lint: _tooling
+    @echo "Running flake8..."
+    uv run --no-sync flake8 src/ tests/ snap/local/ --count --select=E9,F63,F7,F82 --show-source --statistics
+    @echo "Checking black formatting..."
+    uv run --no-sync black --check --diff src/ tests/ snap/local/
+    @echo "Checking isort..."
+    uv run --no-sync isort --check-only --diff --profile black src/ tests/ snap/local/
+
+# Auto-format code (black + isort)
+format: _tooling
+    @echo "Formatting with black..."
+    uv run --no-sync black src/ tests/ snap/local/
+    @echo "Sorting imports with isort..."
+    uv run --no-sync isort --profile black src/ tests/ snap/local/
+
+# Run type checking (mypy)
+typecheck: _tooling
+    @echo "Running mypy..."
+    uv run --locked --no-sync --only-group lint mypy src/
+
+# Build distribution packages
+build:
+    @echo "Building distribution packages..."
+    uv build
+    @echo "Built packages in dist/"
+
+# Building on the host instead ships the host's glibc and GTK, which is how the
+# published AppImage ended up unable to start on Debian 12 or Ubuntu 22.04.
+#
+# Build the AppImage as CI does, in the pinned base image (needs docker)
+appimage: build
+    bash packaging/appimage/docker-build.sh dist/*.whl "$(grep -oP '__version__\s*=\s*"\K[^"]+' src/vocalinux/version.py)" dist
+
+# Start the built AppImage in a distro container, as the CI matrix does. Pick a
+# distro older than the build image to test the glibc floor, or newer to test
+# that the bundle does not break the host binaries it spawns.
+#
+# Boot the built AppImage on a distro, e.g. `just appimage-boot fedora:42`
+appimage-boot distro="debian:12":
+    docker run --rm -v "$PWD/dist:/dist:ro" -v "$PWD/packaging/appimage:/pk:ro" {{distro}} bash /pk/boot-test.sh "/dist/$(basename "$(ls dist/*.AppImage)")"
+
+# Build the .deb and .rpm in the pinned container, as release.yml does (needs
+# docker). Thin packages: the distro supplies Python, GTK and the typelibs;
+# only pywhispercpp and pynput are vendored.
+native-packages: build
+    bash packaging/native/docker-build.sh dist/*.whl "$(grep -oP '__version__\s*=\s*"\K[^"]+' src/vocalinux/version.py)" dist
+
+# Install the built package in a matching distro container, as the CI matrix
+# does: debian:12 / ubuntu:24.04 exercise the .deb, fedora:42 the .rpm.
+native-smoke distro="debian:12":
+    docker run --rm -v "$PWD/dist:/out:ro" -v "$PWD/packaging/native:/pk:ro" {{distro}} bash /pk/smoke-test.sh
+
+# Build the canonical sdist, prepare an explicitly unattested local PKGBUILD,
+# then build/install it unchanged on current Arch (needs uv and docker).
+# Keep distributions and diagnostics away from other packaging commands' outputs.
+aur-gate:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    WORK="$(mktemp -d)"
+    cleanup() {
+        local status=$?
+        if [ "$status" -eq 0 ]; then
+            rm -rf "$WORK"
+        else
+            echo "AUR gate failed; diagnostics retained in $WORK" >&2
+        fi
+    }
+    trap cleanup EXIT
+    python3 scripts/build_reproducible_wheel.py --python "${PYTHON:-python3}" \
+      --output "$WORK/dist" --diagnostics "$WORK/diagnostics"
+    uv venv --no-config --python "${PYTHON:-python3}" "$WORK/venv"
+    uv pip install --no-config --python "$WORK/venv/bin/python" \
+      --require-hashes --no-deps --only-binary=:all: -r requirements/release-build.txt
+    "$WORK/venv/bin/python" scripts/prepare_aur_source.py \
+      --local-unattested --sdist "$WORK"/dist/vocalinux-*.tar.gz --output "$WORK/source"
+    docker run --rm -v "$PWD:/repo:ro" -v "$WORK/source:/aur-source:ro" \
+      -e AUR_SOURCE=/aur-source archlinux:latest bash /repo/packaging/aur/build-test.sh
+
+# Run install.sh unattended in a distro container, as the CI gate does. Answers
+# "does this commit install" (needs docker).
+#
+# The tree is taken via git archive of HEAD and extracted inside the container,
+# so the venv local mode creates lands in the container's copy rather than in
+# your working tree. Mount the common gitdir as well for linked worktrees.
+#
+# Usage: `just install-gate` for debian:12, or `just install-gate fedora:42`
+install-gate distro="debian:12":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    COMMON="$(cd "$(git rev-parse --git-common-dir)" && pwd)"
+    ARGS=(--rm -v "$PWD:$PWD:ro" -e REPO="$PWD")
+    if [ "$COMMON" != "$PWD/.git" ]; then
+        ARGS+=(-v "$COMMON:$COMMON:ro")
+    fi
+    docker run "${ARGS[@]}" {{distro}} bash "$PWD/scripts/install-test.sh"
+
+# Run install.sh's remote path end to end in a distro container, as the CI gate
+# does: bootstrap outside a checkout, tag selection, clone/fetch of a mirror
+# published from HEAD, handoff to the tagged installer. Answers "does the
+# public curl|bash path install this commit" (needs docker). Same worktree
+# handling as install-gate above.
+#
+# Usage: `just remote-install-gate` for debian:12, or `just remote-install-gate fedora:42`
+remote-install-gate distro="debian:12":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    COMMON="$(cd "$(git rev-parse --git-common-dir)" && pwd)"
+    ARGS=(--rm -v "$PWD:$PWD:ro" -e REPO="$PWD")
+    if [ "$COMMON" != "$PWD/.git" ]; then
+        ARGS+=(-v "$COMMON:$COMMON:ro")
+    fi
+    docker run "${ARGS[@]}" {{distro}} bash "$PWD/scripts/install-remote-test.sh"
+
+# Check that a published release verifies as published: manifest, provenance,
+# notes and PyPI digests. Needs gh, downloads nothing.
+# Usage: `just verify-release` for the latest, or `just verify-release v0.17.0`
+verify-release tag="":
+    python3 scripts/verify_release.py {{tag}}
+
+# Build in two clean environments, compare wheels, then stage canonical dist/.
+# PYTHON selects the build interpreter (CI uses the supported floor, 3.11).
+reproducible-wheel:
+    python3 scripts/build_reproducible_wheel.py --python "${PYTHON:-python3}"
+
+# Regenerate uv.lock and the hash-pinned requirements/* exports.
+# Bump the torch +cpu pin in requirements/whisper.in when you want a newer
+# CPU build. OpenAI Whisper does not use torchaudio, whose CPU index can lag.
+lock:
+    uv lock
+    uv export --only-group release-build --no-emit-project -o requirements/release-build.txt
+    uv export --only-group installer-build --no-emit-project -o requirements/installer-build.txt
+    uv export --no-dev --no-emit-project --no-emit-package pygobject -o requirements/runtime.txt
+    uv export --no-dev --extra vad --no-emit-project --no-emit-package pygobject -o requirements/vad.txt
+    # One export per selectable engine. install.sh installs each of these as an
+    # extra, so an extra without an export is an install path with nothing
+    # pinned: that is how parakeet, faster-whisper and vosk reached users.
+    # tests/test_dependency_exports.py enumerates the extras and fails when one
+    # has no export, rather than trusting this list to stay complete.
+    uv export --no-dev --extra vosk --no-emit-project --no-emit-package pygobject -o requirements/vosk.txt
+    uv export --no-dev --extra parakeet --no-emit-project --no-emit-package pygobject -o requirements/parakeet.txt
+    uv export --no-dev --extra faster-whisper --no-emit-project --no-emit-package pygobject -o requirements/faster-whisper.txt
+    # --group lint too: the linters live in a dependency group, not in the dev
+    # extra, so exporting the extra alone produced a file that reproduced
+    # neither `just deps` nor what CI lints with.
+    uv export --extra dev --group lint --no-emit-project --no-emit-package pygobject -o requirements/dev.txt
+    uv pip compile requirements/whisper.in --generate-hashes --emit-index-url \
+        --index-url https://pypi.org/simple \
+        --extra-index-url https://download.pytorch.org/whl/cpu \
+        --index-strategy unsafe-best-match --universal --python-version 3.11 \
+        -c requirements/runtime.txt -c requirements/installer-build.txt -o requirements/whisper.txt
+    # Compiled rather than exported: what the AppImage bundles on top of the
+    # lock, and what builds it, are pinned away from uv.lock on purpose --
+    # see requirements/appimage.in. --universal so one file covers both arches.
+    uv pip compile requirements/appimage.in --universal --no-deps --generate-hashes \
+        -o requirements/appimage.txt
+    uv pip compile requirements/appimage-tools.in --universal --no-deps --generate-hashes \
+        -o requirements/appimage-tools.txt
+    # The Flatpak is a fourth copy of the dependency set, and it drifted ten
+    # packages behind before anything compared it to source. Regenerate it here
+    # so a lock refresh cannot leave it behind again.
+    just flatpak-deps
+
+# Fail if uv.lock is stale relative to pyproject.toml
+lock-check:
+    uv lock --check
+
+# Fail if any requirements/* export is behind uv.lock. Reads the `uv export`
+# lines out of `lock` above and re-runs them, rather than keeping a second copy
+# of that list. Offline: `uv export` reads the lock, so this needs no network.
+export-check:
+    python3 scripts/check_exports.py
+
+# Regenerate the shell package inventory consumed by install.sh. The committed
+# output keeps the runtime installer independent of a YAML parser.
+distro-packages: _tooling
+    uv run --no-sync python scripts/generate_distro_package_map.py
+
+# Fail if install.d/package_map.sh is behind its YAML source.
+distro-packages-check: _tooling
+    uv run --no-sync python scripts/generate_distro_package_map.py --check
+
+# The export pins names, versions and digests; this looks up the URL that serves
+# those bytes, so it needs PyPI. tests/test_flatpak_packaging.py checks the same
+# invariant offline, which is what CI gates on.
+# Point the Flatpak's dependency manifest at what uv.lock resolved.
+flatpak-deps: _tooling
+    uv run --no-sync python scripts/sync_flatpak_deps.py
+
+# Fail if the Flatpak manifest is behind requirements/vad.txt (runtime + [vad]).
+flatpak-deps-check: _tooling
+    uv run --no-sync python scripts/sync_flatpak_deps.py --check
+
+# Refresh the pinned model digests. whisper.cpp digests come from Hugging Face
+# `lfs` metadata and cost no bandwidth; VOSK is pinned by the bytes we fetch, so
+# every zip not already in the manifest is downloaded. A first run, or any run
+# with --refresh, pulls ~21.9GB and takes ~30 minutes.
+# Run after adding a model to vosk_model_info.py, whispercpp_model_info.py,
+# parakeet_model_info.py or faster_whisper_model_info.py.
+model-checksums: _tooling
+    uv run --no-sync python scripts/generate-model-checksums.py
+
+# Remove build artifacts
+clean:
+    @echo "Cleaning build artifacts..."
+    rm -rf build/
+    rm -rf dist/
+    rm -rf *.egg-info
+    rm -rf src/*.egg-info
+    find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
+    find . -type f -name "*.pyc" -delete
+    find . -type d -name ".pytest_cache" -exec rm -rf {} + 2>/dev/null || true
+    find . -type d -name ".mypy_cache" -exec rm -rf {} + 2>/dev/null || true
+    rm -rf htmlcov/
+    rm -f .coverage
+    rm -f coverage.xml
+    @echo "Clean complete"
+
+# Run the installed application
+run:
+    vocalinux
+
+# Run the installed application with debug logging
+run-debug:
+    vocalinux --debug
+
+# Run from source
+run-source: _tooling
+    uv run --no-sync python -m vocalinux.main
+
+# Run from source with debug logging
+run-source-debug: _tooling
+    uv run --no-sync python -m vocalinux.main --debug
+
+# Run pre-commit hooks on all files
+pre-commit: _tooling
+    uv run --no-sync pre-commit run --all-files
+
+# Print the current version
+version:
+    @uv run --no-sync python -c "from src.vocalinux.version import __version__; print(__version__)"
